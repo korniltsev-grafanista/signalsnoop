@@ -1,0 +1,31 @@
+#!/usr/bin/env bpftrace
+
+kprobe:get_signal
+{
+    printf("Signal delivery to pid %d (%s)\n", pid, comm);
+    printf("%s\n", kstack);
+}
+
+kretprobe:get_signal
+{
+    printf("get_signal returned: %d\n\n", retval);
+}
+
+kprobe:vfs_coredump
+{
+    printf("vfs_coredump for pid %d (%s)\n", pid, comm);
+    printf("%s\n\n", kstack);
+}
+
+kprobe:do_group_exit
+{
+    printf("do_group_exit for pid %d (%s)\n", pid, comm);
+    printf("%s\n\n", kstack);
+}
+
+kprobe:force_sigsegv
+{
+    printf("force_sigsegv for pid %d (%s)\n", pid, comm);
+    printf("%s\n\n", kstack);
+}
+

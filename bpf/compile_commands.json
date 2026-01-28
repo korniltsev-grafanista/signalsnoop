@@ -1,0 +1,19 @@
+[
+  {
+    "directory": "/home/korniltsev/signalsnoop/bpf",
+    "file": "signalsnoop.c",
+    "arguments": [
+      "clang",
+      "-target", "bpf",
+      "-D__TARGET_ARCH_x86",
+      "-D__BPF_TRACING__",
+      "-O2",
+      "-g",
+      "-Wall",
+      "-Werror",
+      "-I", "headers",
+      "-c",
+      "signalsnoop.c"
+    ]
+  }
+]

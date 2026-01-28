@@ -1,0 +1,25 @@
+# Binary
+signalsnoop
+signalsnoop-*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+__debug_bin*
