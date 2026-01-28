@@ -88,4 +88,4 @@ docker:
 
 # Build and run docker image
 docker-run: docker
-	docker run --rm -it --privileged --pid=host $(IMAGE_PREFIX)$(IMAGE_NAME):$(IMAGE_TAG)
+	docker run --rm -it --privileged $(IMAGE_PREFIX)$(IMAGE_NAME):$(IMAGE_TAG)
