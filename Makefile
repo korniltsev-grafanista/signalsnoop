@@ -1,7 +1,6 @@
 .PHONY: all generate build run clean deps setup-headers vmlinux bpftrace docker docker-push docker-run
 
 IMAGE_PREFIX ?= korniltsev/
-IMAGE_NAME ?= signalsnoop
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
 
 CILIUM_EBPF_VERSION := v0.12.3
@@ -80,12 +79,12 @@ setup-headers:
 
 # Docker build for amd64 and arm64 (push to registry)
 docker-push:
-	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(IMAGE_PREFIX)$(IMAGE_NAME):$(IMAGE_TAG) .
+	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(IMAGE_PREFIX)signalsnoop:$(IMAGE_TAG) -t $(IMAGE_PREFIX)signalsnoop:latest .
 
 # Docker build for local use (current platform only, --load doesn't support multi-platform)
 docker:
-	docker buildx build --load -t $(IMAGE_PREFIX)$(IMAGE_NAME):$(IMAGE_TAG) .
+	docker buildx build --load -t $(IMAGE_PREFIX)signalsnoop:$(IMAGE_TAG) -t $(IMAGE_PREFIX)signalsnoop:latest .
 
 # Build and run docker image
 docker-run: docker
-	docker run --rm -it --privileged $(IMAGE_PREFIX)$(IMAGE_NAME):$(IMAGE_TAG)
+	docker run --rm -it --privileged $(IMAGE_PREFIX)signalsnoop:$(IMAGE_TAG)
