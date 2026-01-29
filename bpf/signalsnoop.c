@@ -19,6 +19,7 @@ char __license[] SEC("license") = "GPL";
 #define EVENT_SIGNAL_SETUP_FAILED 6
 #define EVENT_FORCE_FATAL_SIG    7
 #define EVENT_FORCE_SIG          8
+#define EVENT_X64_RT_FRAME_FAILED 9
 
 // Userspace registers structure (architecture-independent subset)
 struct user_regs {
@@ -235,6 +236,12 @@ int BPF_KPROBE(kprobe_vfs_coredump) {
     return 0;
 }
 
+SEC("kprobe/do_coredump")
+int BPF_KPROBE(kprobe_do_coredump) {
+    emit_event(ctx, EVENT_VFS_COREDUMP, 0);
+    return 0;
+}
+
 SEC("kprobe/do_group_exit")
 int BPF_KPROBE(kprobe_do_group_exit) {
     emit_event(ctx, EVENT_DO_GROUP_EXIT, 0);
@@ -266,6 +273,16 @@ int BPF_KPROBE(kprobe_force_fatal_sig, int sig) {
 SEC("kprobe/force_sig")
 int BPF_KPROBE(kprobe_force_sig, int sig) {
     emit_event(ctx, EVENT_FORCE_SIG, sig);
+    return 0;
+}
+
+// x64_setup_rt_frame returns 0 on success, negative on failure
+SEC("kretprobe/x64_setup_rt_frame")
+int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
+    if (ret == 0) {
+        return 0;
+    }
+    emit_event(ctx, EVENT_X64_RT_FRAME_FAILED, ret);
     return 0;
 }
 

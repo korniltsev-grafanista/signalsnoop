@@ -101,6 +101,7 @@ type signalsnoopSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type signalsnoopProgramSpecs struct {
+	KprobeDoCoredump           *ebpf.ProgramSpec `ebpf:"kprobe_do_coredump"`
 	KprobeDoGroupExit          *ebpf.ProgramSpec `ebpf:"kprobe_do_group_exit"`
 	KprobeForceFatalSig        *ebpf.ProgramSpec `ebpf:"kprobe_force_fatal_sig"`
 	KprobeForceSig             *ebpf.ProgramSpec `ebpf:"kprobe_force_sig"`
@@ -109,6 +110,7 @@ type signalsnoopProgramSpecs struct {
 	KprobeSignalSetupDone      *ebpf.ProgramSpec `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.ProgramSpec `ebpf:"kprobe_vfs_coredump"`
 	KretprobeGetSignal         *ebpf.ProgramSpec `ebpf:"kretprobe_get_signal"`
+	KretprobeX64SetupRtFrame   *ebpf.ProgramSpec `ebpf:"kretprobe_x64_setup_rt_frame"`
 	TracepointSchedProcessFree *ebpf.ProgramSpec `ebpf:"tracepoint__sched_process_free"`
 }
 
@@ -151,6 +153,7 @@ func (m *signalsnoopMaps) Close() error {
 //
 // It can be passed to loadSignalsnoopObjects or ebpf.CollectionSpec.LoadAndAssign.
 type signalsnoopPrograms struct {
+	KprobeDoCoredump           *ebpf.Program `ebpf:"kprobe_do_coredump"`
 	KprobeDoGroupExit          *ebpf.Program `ebpf:"kprobe_do_group_exit"`
 	KprobeForceFatalSig        *ebpf.Program `ebpf:"kprobe_force_fatal_sig"`
 	KprobeForceSig             *ebpf.Program `ebpf:"kprobe_force_sig"`
@@ -159,11 +162,13 @@ type signalsnoopPrograms struct {
 	KprobeSignalSetupDone      *ebpf.Program `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.Program `ebpf:"kprobe_vfs_coredump"`
 	KretprobeGetSignal         *ebpf.Program `ebpf:"kretprobe_get_signal"`
+	KretprobeX64SetupRtFrame   *ebpf.Program `ebpf:"kretprobe_x64_setup_rt_frame"`
 	TracepointSchedProcessFree *ebpf.Program `ebpf:"tracepoint__sched_process_free"`
 }
 
 func (p *signalsnoopPrograms) Close() error {
 	return _SignalsnoopClose(
+		p.KprobeDoCoredump,
 		p.KprobeDoGroupExit,
 		p.KprobeForceFatalSig,
 		p.KprobeForceSig,
@@ -172,6 +177,7 @@ func (p *signalsnoopPrograms) Close() error {
 		p.KprobeSignalSetupDone,
 		p.KprobeVfsCoredump,
 		p.KretprobeGetSignal,
+		p.KretprobeX64SetupRtFrame,
 		p.TracepointSchedProcessFree,
 	)
 }
