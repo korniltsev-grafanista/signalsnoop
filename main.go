@@ -147,6 +147,7 @@ func main() {
 	attachKprobe(flagSignalSetupDone, "signal_setup_done", objs.KprobeSignalSetupDone)
 	attachKprobe(flagForceFatalSig, "force_fatal_sig", objs.KprobeForceFatalSig)
 	attachKprobe(flagForceSig, "force_sig", objs.KprobeForceSig)
+	attachKprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KprobeX64SetupRtFrame)
 	attachKretprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KretprobeX64SetupRtFrame)
 
 	// Attach sched_process_free raw tracepoint

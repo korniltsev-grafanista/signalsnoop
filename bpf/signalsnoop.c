@@ -83,6 +83,14 @@ struct {
     __uint(max_entries, 256 * 1024); // 256 KB
 } events SEC(".maps");
 
+// Hash map to pass signal number from kprobe to kretprobe for x64_setup_rt_frame
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);    // tid
+    __type(value, __s32);  // sig
+} x64_setup_rt_frame__signals SEC(".maps");
+
 // Force BTF type export for bpf2go type generation
 const struct event *unused_event __attribute__((unused));
 const struct user_regs *unused_user_regs __attribute__((unused));
@@ -276,13 +284,28 @@ int BPF_KPROBE(kprobe_force_sig, int sig) {
     return 0;
 }
 
+// int x64_setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs)
+// Store signal number in hash map for retrieval in kretprobe
+SEC("kprobe/x64_setup_rt_frame")
+int BPF_KPROBE(kprobe_x64_setup_rt_frame, struct ksignal *ksig) {
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __s32 sig = BPF_CORE_READ(ksig, sig);
+    bpf_map_update_elem(&x64_setup_rt_frame__signals, &tid, &sig, BPF_ANY);
+    return 0;
+}
+
 // x64_setup_rt_frame returns 0 on success, negative on failure
 SEC("kretprobe/x64_setup_rt_frame")
 int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __s32 *sig = bpf_map_lookup_elem(&x64_setup_rt_frame__signals, &tid);
+    __s32 signal = sig ? *sig : 0;
+    bpf_map_delete_elem(&x64_setup_rt_frame__signals, &tid);
+
     if (ret == 0) {
         return 0;
     }
-    emit_event(ctx, EVENT_X64_RT_FRAME_FAILED, ret);
+    emit_event(ctx, EVENT_X64_RT_FRAME_FAILED, signal);
     return 0;
 }
 
