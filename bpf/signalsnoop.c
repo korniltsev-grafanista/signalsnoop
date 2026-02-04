@@ -43,23 +43,30 @@ struct user_regs {
     __u64 r15;     // r15 / x13
 };
 
-// Stack probe offsets (negative = above stack pointer)
-#define STACK_PROBE_OFF_0   0
-#define STACK_PROBE_OFF_1   (-128)
-#define STACK_PROBE_OFF_2   (-568)
+// Maximum number of stack probes
+#define MAX_STACK_PROBES 4
 
 // Error code for bad address (not in vmlinux.h)
 #define EFAULT 14
 
+// Single stack probe entry
+struct stack_probe_entry {
+    __s64 off;  // offset from sp (configured from userspace)
+    __u64 val;  // value read at offset
+    __s32 err;  // 0 on success, negative errno on failure
+    __s32 _pad; // padding for alignment
+};
+
 // Probed stack values
 struct stack_probe {
-    __u64 val_0;       // value at sp+0
-    __u64 val_m128;    // value at sp-128
-    __u64 val_m568;    // value at sp-568
-    __s32 err_0;       // 0 on success, negative errno on failure
-    __s32 err_m128;
-    __s32 err_m568;
+    struct stack_probe_entry entries[MAX_STACK_PROBES];
 };
+
+// Stack probe offsets as constants (rewritten from userspace before loading)
+volatile const __s64 stack_probe_off_0 = 0;
+volatile const __s64 stack_probe_off_1 = -128;
+volatile const __s64 stack_probe_off_2 = -568;
+volatile const __s64 stack_probe_off_3 = -700;
 
 // Event structure sent to userspace
 struct event {
@@ -164,31 +171,25 @@ static __always_inline void capture_user_regs(struct event *e) {
     e->regs_valid = 1;
 }
 
-// Helper to probe userspace stack at specific offsets
-static __always_inline void probe_user_stack(struct event *e) {
+// Helper to probe userspace stack at a single offset
+static __always_inline void probe_stack_offset(struct event *e, __u64 sp, int idx, __s64 off) {
+    struct stack_probe_entry *entry = &e->stack_probe.entries[idx];
+    entry->off = off;
     if (!e->regs_valid) {
-        e->stack_probe.err_0 = -EFAULT;
-        e->stack_probe.err_m128 = -EFAULT;
-        e->stack_probe.err_m568 = -EFAULT;
+        entry->err = -EFAULT;
         return;
     }
+    entry->err = bpf_probe_read_user(&entry->val, sizeof(entry->val), (void *)(sp + off));
+}
 
-    __u64 sp = e->regs.sp;
+// Helper to probe userspace stack at specific offsets
+static __always_inline void probe_user_stack(struct event *e) {
+    __u64 sp = e->regs_valid ? e->regs.sp : 0;
 
-    // Probe at sp+0
-    e->stack_probe.err_0 = bpf_probe_read_user(&e->stack_probe.val_0,
-                                                sizeof(e->stack_probe.val_0),
-                                                (void *)(sp + STACK_PROBE_OFF_0));
-
-    // Probe at sp-128
-    e->stack_probe.err_m128 = bpf_probe_read_user(&e->stack_probe.val_m128,
-                                                   sizeof(e->stack_probe.val_m128),
-                                                   (void *)(sp + STACK_PROBE_OFF_1));
-
-    // Probe at sp-568
-    e->stack_probe.err_m568 = bpf_probe_read_user(&e->stack_probe.val_m568,
-                                                   sizeof(e->stack_probe.val_m568),
-                                                   (void *)(sp + STACK_PROBE_OFF_2));
+    probe_stack_offset(e, sp, 0, stack_probe_off_0);
+    probe_stack_offset(e, sp, 1, stack_probe_off_1);
+    probe_stack_offset(e, sp, 2, stack_probe_off_2);
+    probe_stack_offset(e, sp, 3, stack_probe_off_3);
 }
 
 // Helper to emit a full event with stack, regs, and stack probe

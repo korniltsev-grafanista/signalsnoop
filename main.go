@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -19,6 +21,8 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/kallsyms"
 )
 
+const maxStackProbes = 4
+
 var (
 	flagAll             = flag.Bool("all", false, "Enable all probes")
 	flagGetSignal       = flag.Bool("get-signal", false, "Enable get_signal kprobe/kretprobe")
@@ -28,10 +32,11 @@ var (
 	flagSignalSetupDone = flag.Bool("signal-setup-done", true, "Enable signal_setup_done kprobe (fires on failed signal setup)")
 	flagForceFatalSig   = flag.Bool("force-fatal-sig", true, "Enable force_fatal_sig kprobe")
 	flagForceSig        = flag.Bool("force-sig", true, "Enable force_sig kprobe")
+	flagStackProbes     = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target amd64 -type event -type user_regs -type stack_probe signalsnoop ./bpf/signalsnoop.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target arm64 -type event -type user_regs -type stack_probe signalsnoop ./bpf/signalsnoop.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target amd64 -type event -type user_regs -type stack_probe -type stack_probe_entry signalsnoop ./bpf/signalsnoop.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target arm64 -type event -type user_regs -type stack_probe -type stack_probe_entry signalsnoop ./bpf/signalsnoop.c
 
 const maxStackDepth = 50
 
@@ -63,6 +68,24 @@ var eventInfo = map[uint8]struct {
 	EventForceSig:          {"force_sig", true},
 }
 
+func parseStackProbes(s string) ([]int64, error) {
+	parts := strings.Split(s, ",")
+	if len(parts) > maxStackProbes {
+		return nil, fmt.Errorf("too many stack probes (max %d)", maxStackProbes)
+	}
+	offsets := make([]int64, maxStackProbes)
+	for i := 0; i < maxStackProbes; i++ {
+		if i < len(parts) {
+			v, err := strconv.ParseInt(strings.TrimSpace(parts[i]), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid stack probe offset %q: %v", parts[i], err)
+			}
+			offsets[i] = v
+		}
+	}
+	return offsets, nil
+}
+
 func main() {
 	flag.Parse()
 
@@ -87,8 +110,29 @@ func main() {
 		log.Printf("Stack traces will show raw addresses only")
 	}
 
+	stackProbeOffsets, err := parseStackProbes(*flagStackProbes)
+	if err != nil {
+		log.Fatalf("Failed to parse stack probes: %v", err)
+	}
+
+	// Load the BPF spec and rewrite constants
+	spec, err := loadSignalsnoop()
+	if err != nil {
+		log.Fatalf("Failed to load eBPF spec: %v", err)
+	}
+
+	// Rewrite stack probe offset constants
+	if err := spec.RewriteConstants(map[string]interface{}{
+		"stack_probe_off_0": stackProbeOffsets[0],
+		"stack_probe_off_1": stackProbeOffsets[1],
+		"stack_probe_off_2": stackProbeOffsets[2],
+		"stack_probe_off_3": stackProbeOffsets[3],
+	}); err != nil {
+		log.Fatalf("Failed to rewrite stack probe constants: %v", err)
+	}
+
 	objs := signalsnoopObjects{}
-	if err := loadSignalsnoopObjects(&objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			log.Fatalf("Failed to load eBPF objects: %v\n%+v", err, ve)
@@ -260,21 +304,17 @@ func printStackProbe(e *signalsnoopEvent) {
 	}
 
 	sp := e.Regs.Sp
-	p := &e.StackProbe
 	fmt.Println("    Stack probe:")
 
-	printProbeVal := func(offset int64, val uint64, err int32) {
-		addr := uint64(int64(sp) + offset)
-		if err == 0 {
-			fmt.Printf("        [sp%+d] 0x%016x: 0x%016x\n", offset, addr, val)
+	for i := 0; i < maxStackProbes; i++ {
+		entry := &e.StackProbe.Entries[i]
+		addr := uint64(int64(sp) + entry.Off)
+		if entry.Err == 0 {
+			fmt.Printf("        [sp%+d] 0x%016x: 0x%016x\n", entry.Off, addr, entry.Val)
 		} else {
-			fmt.Printf("        [sp%+d] 0x%016x: <failed: %d>\n", offset, addr, err)
+			fmt.Printf("        [sp%+d] 0x%016x: <failed: %d>\n", entry.Off, addr, entry.Err)
 		}
 	}
-
-	printProbeVal(0, p.Val0, p.Err0)
-	printProbeVal(-128, p.ValM128, p.ErrM128)
-	printProbeVal(-568, p.ValM568, p.ErrM568)
 }
 
 func resolveSymbol(addr uint64) string {

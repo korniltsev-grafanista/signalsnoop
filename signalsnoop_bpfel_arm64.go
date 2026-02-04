@@ -29,14 +29,13 @@ type signalsnoopEvent struct {
 	StackProbe signalsnoopStackProbe
 }
 
-type signalsnoopStackProbe struct {
-	Val0    uint64
-	ValM128 uint64
-	ValM568 uint64
-	Err0    int32
-	ErrM128 int32
-	ErrM568 int32
-	_       [4]byte
+type signalsnoopStackProbe struct{ Entries [4]signalsnoopStackProbeEntry }
+
+type signalsnoopStackProbeEntry struct {
+	Off int64
+	Val uint64
+	Err int32
+	Pad int32
 }
 
 type signalsnoopUserRegs struct {
