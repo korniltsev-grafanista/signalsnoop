@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -9,9 +10,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -33,6 +36,8 @@ var (
 	flagForceFatalSig   = flag.Bool("force-fatal-sig", true, "Enable force_fatal_sig kprobe")
 	flagForceSig        = flag.Bool("force-sig", true, "Enable force_sig kprobe")
 	flagStackProbes     = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
+	flagMapsPattern     = flag.String("maps-pattern", "", "Regex pattern to match process cmdline or exe for maps monitoring (empty = disabled)")
+	flagMapsTTLSec      = flag.Int("maps-ttl", 5, "Seconds to keep maps cached after process death")
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target amd64 -type event -type user_regs -type stack_probe -type stack_probe_entry signalsnoop ./bpf/signalsnoop.c
@@ -53,6 +58,7 @@ const (
 )
 
 var resolver *kallsyms.KAllSyms
+var mapsCache *ProcessMapsCache
 
 // eventInfo maps event types to their display format
 var eventInfo = map[uint8]struct {
@@ -202,6 +208,20 @@ func main() {
 	}
 	defer rd.Close()
 
+	// Initialize process maps monitoring
+	var cancelMapsScanner context.CancelFunc
+	if *flagMapsPattern != "" {
+		pattern, err := regexp.Compile(*flagMapsPattern)
+		if err != nil {
+			log.Fatalf("Invalid maps-pattern regex: %v", err)
+		}
+		mapsCache = NewProcessMapsCache()
+		var ctx context.Context
+		ctx, cancelMapsScanner = context.WithCancel(context.Background())
+		go RunProcessScanner(ctx, pattern, time.Duration(*flagMapsTTLSec)*time.Second, mapsCache)
+		log.Printf("Process maps monitoring enabled for pattern: %s", *flagMapsPattern)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
@@ -230,6 +250,9 @@ func main() {
 	}()
 
 	<-sig
+	if cancelMapsScanner != nil {
+		cancelMapsScanner()
+	}
 	fmt.Println("\nExiting...")
 }
 
@@ -243,18 +266,21 @@ func printEvent(e *signalsnoopEvent) {
 
 	info, ok := eventInfo[e.EventType]
 	if !ok {
-		fmt.Printf("unknown event type %d for pid %d (%s)\n", e.EventType, e.Pid, comm)
+		fmt.Printf("unknown event type %d for tgid=%d tid=%d (%s)\n", e.EventType, e.Pid, e.Tid, comm)
 		return
 	}
 
 	if info.showSig {
-		fmt.Printf("%s for pid %d (%s), sig=%d\n", info.name, e.Pid, comm, e.Retval)
+		fmt.Printf("%s for tgid=%d tid=%d (%s), sig=%d\n", info.name, e.Pid, e.Tid, comm, e.Retval)
 	} else {
-		fmt.Printf("%s for pid %d (%s)\n", info.name, e.Pid, comm)
+		fmt.Printf("%s for tgid=%d tid=%d (%s)\n", info.name, e.Pid, e.Tid, comm)
 	}
 	printStack(e)
 	printRegs(e)
 	printStackProbe(e)
+	if e.EventType == EventVfsCoredump {
+		printCachedMaps(e.Pid)
+	}
 	fmt.Println()
 }
 
@@ -314,6 +340,22 @@ func printStackProbe(e *signalsnoopEvent) {
 		} else {
 			fmt.Printf("        [sp%+d] 0x%016x: <failed: %d>\n", entry.Off, addr, entry.Err)
 		}
+	}
+}
+
+func printCachedMaps(pid uint32) {
+	if mapsCache == nil {
+		return
+	}
+	if maps, ok := mapsCache.Get(pid); ok {
+		fmt.Println("    Process maps:")
+		for _, line := range strings.Split(maps, "\n") {
+			if line != "" {
+				fmt.Printf("        %s\n", line)
+			}
+		}
+	} else {
+		fmt.Println("    no mappings found")
 	}
 }
 
