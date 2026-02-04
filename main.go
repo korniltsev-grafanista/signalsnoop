@@ -36,6 +36,7 @@ var (
 	flagForceFatalSig   = flag.Bool("force-fatal-sig", true, "Enable force_fatal_sig kprobe")
 	flagForceSig        = flag.Bool("force-sig", true, "Enable force_sig kprobe")
 	flagRtSigreturn     = flag.Bool("rt-sigreturn", false, "Enable rt_sigreturn kprobe")
+	flagX64SetupRtFrame = flag.Bool("x64-setup-rt-frame", true, "Enable x64_setup_rt_frame kretprobe (fires on failure)")
 	flagStackProbes     = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
 	flagMapsPattern     = flag.String("maps-pattern", "", "Regex pattern to match process cmdline or exe for maps monitoring (empty = disabled)")
 	flagMapsTTLSec      = flag.Int("maps-ttl", 5, "Seconds to keep maps cached after process death")
@@ -57,6 +58,7 @@ const (
 	EventForceFatalSig     = 7
 	EventForceSig          = 8
 	EventRtSigreturn       = 9
+	EventX64RtFrameFailed  = 10
 )
 
 var resolver *kallsyms.KAllSyms
@@ -76,6 +78,7 @@ var eventInfo = map[uint8]struct {
 	EventForceFatalSig:     {"force_fatal_sig", true},
 	EventForceSig:          {"force_sig", true},
 	EventRtSigreturn:       {"rt_sigreturn", false},
+	EventX64RtFrameFailed:  {"x64_setup_rt_frame failed", true},
 }
 
 func parseStackProbes(s string) ([]int64, error) {
@@ -108,6 +111,7 @@ func main() {
 		*flagForceFatalSig = true
 		*flagForceSig = true
 		*flagRtSigreturn = true
+		*flagX64SetupRtFrame = true
 	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -154,48 +158,60 @@ func main() {
 
 	var links []link.Link
 
-	attachKprobe := func(enabled *bool, name string, prog *ebpf.Program, optional bool) {
+	attachKprobe := func(enabled *bool, name string, prog *ebpf.Program) bool {
 		if !*enabled {
-			return
+			return false
 		}
 		l, err := link.Kprobe(name, prog, nil)
 		if err != nil {
-			if optional {
-				log.Printf("Warning: Failed to attach kprobe to %s: %v (function may not exist)", name, err)
-			} else {
-				log.Fatalf("Failed to attach kprobe to %s: %v", name, err)
-			}
-			return
+			log.Printf("[FAIL] kprobe/%s: %v", name, err)
+			return false
 		}
 		links = append(links, l)
+		log.Printf("[OK] kprobe/%s", name)
+		return true
 	}
 
-	attachKretprobe := func(enabled *bool, name string, prog *ebpf.Program) {
+	attachKretprobe := func(enabled *bool, name string, prog *ebpf.Program) bool {
 		if !*enabled {
-			return
+			return false
 		}
 		l, err := link.Kretprobe(name, prog, nil)
 		if err != nil {
-			log.Fatalf("Failed to attach kretprobe to %s: %v", name, err)
+			log.Printf("[FAIL] kretprobe/%s: %v", name, err)
+			return false
 		}
 		links = append(links, l)
+		log.Printf("[OK] kretprobe/%s", name)
+		return true
 	}
 
-	attachKprobe(flagGetSignal, "get_signal", objs.KprobeGetSignal, false)
+	attachKprobe(flagGetSignal, "get_signal", objs.KprobeGetSignal)
 	attachKretprobe(flagGetSignal, "get_signal", objs.KretprobeGetSignal)
-	attachKprobe(flagVfsCoredump, "vfs_coredump", objs.KprobeVfsCoredump, true)
-	attachKprobe(flagDoGroupExit, "do_group_exit", objs.KprobeDoGroupExit, false)
-	attachKprobe(flagForceSigsegv, "force_sigsegv", objs.KprobeForceSigsegv, true)
-	attachKprobe(flagSignalSetupDone, "signal_setup_done", objs.KprobeSignalSetupDone, true)
-	attachKprobe(flagForceFatalSig, "force_fatal_sig", objs.KprobeForceFatalSig, true)
-	attachKprobe(flagForceSig, "force_sig", objs.KprobeForceSig, true)
-	attachKprobe(flagRtSigreturn, "__x64_sys_rt_sigreturn", objs.KprobeRtSigreturn, true)
 
-	// Always attach sched_process_free raw tracepoint (debug output in /sys/kernel/debug/tracing/trace_pipe)
+	// Try vfs_coredump first, fall back to do_coredump if not available
+	if *flagVfsCoredump {
+		if !attachKprobe(flagVfsCoredump, "vfs_coredump", objs.KprobeVfsCoredump) {
+			log.Printf("Trying fallback do_coredump...")
+			attachKprobe(flagVfsCoredump, "do_coredump", objs.KprobeDoCoredump)
+		}
+	}
+
+	attachKprobe(flagDoGroupExit, "do_group_exit", objs.KprobeDoGroupExit)
+	attachKprobe(flagForceSigsegv, "force_sigsegv", objs.KprobeForceSigsegv)
+	attachKprobe(flagSignalSetupDone, "signal_setup_done", objs.KprobeSignalSetupDone)
+	attachKprobe(flagForceFatalSig, "force_fatal_sig", objs.KprobeForceFatalSig)
+	attachKprobe(flagForceSig, "force_sig", objs.KprobeForceSig)
+	attachKprobe(flagRtSigreturn, "__x64_sys_rt_sigreturn", objs.KprobeRtSigreturn)
+	attachKprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KprobeX64SetupRtFrame)
+	attachKretprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KretprobeX64SetupRtFrame)
+
+	// Attach sched_process_free raw tracepoint
 	if tp, err := link.AttachTracing(link.TracingOptions{Program: objs.TracepointSchedProcessFree}); err != nil {
-		log.Printf("Warning: Failed to attach tp_btf sched_process_free: %v", err)
+		log.Printf("[FAIL] tp_btf/sched_process_free: %v", err)
 	} else {
 		links = append(links, tp)
+		log.Printf("[OK] tp_btf/sched_process_free")
 	}
 
 	if len(links) == 0 {
