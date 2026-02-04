@@ -13,20 +13,74 @@ import (
 )
 
 type signalsnoopEvent struct {
-	Pid        uint32
-	Tid        uint32
-	Timestamp  uint64
-	Comm       [16]int8
-	EventType  uint8
-	_          [7]byte
-	Retval     int64
-	StackDepth int32
-	_          [4]byte
-	Stack      [50]uint64
-	Regs       signalsnoopUserRegs
-	RegsValid  uint8
-	_          [7]byte
-	StackProbe signalsnoopStackProbe
+	Pid           uint32
+	Tid           uint32
+	Timestamp     uint64
+	Comm          [16]int8
+	EventType     uint8
+	_             [7]byte
+	Retval        int64
+	StackDepth    int32
+	_             [4]byte
+	Stack         [50]uint64
+	Regs          signalsnoopUserRegs
+	RegsValid     uint8
+	_             [7]byte
+	StackProbe    signalsnoopStackProbe
+	SigreturnData signalsnoopRtSigreturnData
+}
+
+type signalsnoopRtSigframeCapture struct {
+	Pretcode uint64
+	Uc       signalsnoopUcontextCapture
+	Info     signalsnoopSiginfoCapture
+}
+
+type signalsnoopRtSigreturnData struct {
+	FrameAddr   uint64
+	ReadSuccess uint8
+	Pad         [7]uint8
+	Frame       signalsnoopRtSigframeCapture
+}
+
+type signalsnoopSigcontext64Capture struct {
+	R8        uint64
+	R9        uint64
+	R10       uint64
+	R11       uint64
+	R12       uint64
+	R13       uint64
+	R14       uint64
+	R15       uint64
+	Di        uint64
+	Si        uint64
+	Bp        uint64
+	Bx        uint64
+	Dx        uint64
+	Ax        uint64
+	Cx        uint64
+	Sp        uint64
+	Ip        uint64
+	Flags     uint64
+	Cs        uint16
+	Gs        uint16
+	Fs        uint16
+	Ss        uint16
+	Err       uint64
+	Trapno    uint64
+	Oldmask   uint64
+	Cr2       uint64
+	Fpstate   uint64
+	Reserved1 [8]uint64
+}
+
+type signalsnoopSiginfoCapture struct {
+	SiSigno  int32
+	SiErrno  int32
+	SiCode   int32
+	Pad      int32
+	SiAddr   uint64
+	Reserved [14]uint64
 }
 
 type signalsnoopStackProbe struct{ Entries [4]signalsnoopStackProbeEntry }
@@ -36,6 +90,21 @@ type signalsnoopStackProbeEntry struct {
 	Val uint64
 	Err int32
 	Pad int32
+}
+
+type signalsnoopStackT_capture struct {
+	SsSp    uint64
+	SsFlags int32
+	Pad     int32
+	SsSize  uint64
+}
+
+type signalsnoopUcontextCapture struct {
+	UcFlags    uint64
+	UcLink     uint64
+	UcStack    signalsnoopStackT_capture
+	UcMcontext signalsnoopSigcontext64Capture
+	UcSigmask  uint64
 }
 
 type signalsnoopUserRegs struct {
@@ -105,6 +174,7 @@ type signalsnoopProgramSpecs struct {
 	KprobeForceSig             *ebpf.ProgramSpec `ebpf:"kprobe_force_sig"`
 	KprobeForceSigsegv         *ebpf.ProgramSpec `ebpf:"kprobe_force_sigsegv"`
 	KprobeGetSignal            *ebpf.ProgramSpec `ebpf:"kprobe_get_signal"`
+	KprobeRtSigreturn          *ebpf.ProgramSpec `ebpf:"kprobe_rt_sigreturn"`
 	KprobeSignalSetupDone      *ebpf.ProgramSpec `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.ProgramSpec `ebpf:"kprobe_vfs_coredump"`
 	KretprobeGetSignal         *ebpf.ProgramSpec `ebpf:"kretprobe_get_signal"`
@@ -155,6 +225,7 @@ type signalsnoopPrograms struct {
 	KprobeForceSig             *ebpf.Program `ebpf:"kprobe_force_sig"`
 	KprobeForceSigsegv         *ebpf.Program `ebpf:"kprobe_force_sigsegv"`
 	KprobeGetSignal            *ebpf.Program `ebpf:"kprobe_get_signal"`
+	KprobeRtSigreturn          *ebpf.Program `ebpf:"kprobe_rt_sigreturn"`
 	KprobeSignalSetupDone      *ebpf.Program `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.Program `ebpf:"kprobe_vfs_coredump"`
 	KretprobeGetSignal         *ebpf.Program `ebpf:"kretprobe_get_signal"`
@@ -168,6 +239,7 @@ func (p *signalsnoopPrograms) Close() error {
 		p.KprobeForceSig,
 		p.KprobeForceSigsegv,
 		p.KprobeGetSignal,
+		p.KprobeRtSigreturn,
 		p.KprobeSignalSetupDone,
 		p.KprobeVfsCoredump,
 		p.KretprobeGetSignal,

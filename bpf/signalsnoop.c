@@ -19,6 +19,7 @@ char __license[] SEC("license") = "GPL";
 #define EVENT_SIGNAL_SETUP_FAILED 6
 #define EVENT_FORCE_FATAL_SIG    7
 #define EVENT_FORCE_SIG          8
+#define EVENT_RT_SIGRETURN       9
 
 // Userspace registers structure (architecture-independent subset)
 struct user_regs {
@@ -62,6 +63,59 @@ struct stack_probe {
     struct stack_probe_entry entries[MAX_STACK_PROBES];
 };
 
+// Mirror of x86_64 sigcontext_64 for rt_sigframe capture
+struct sigcontext_64_capture {
+    __u64 r8, r9, r10, r11, r12, r13, r14, r15;
+    __u64 di, si, bp, bx, dx, ax, cx, sp, ip, flags;
+    __u16 cs, gs, fs, ss;
+    __u64 err, trapno, oldmask, cr2;
+    __u64 fpstate;
+    __u64 reserved1[8];
+};
+
+// Mirror of stack_t
+struct stack_t_capture {
+    __u64 ss_sp;
+    __s32 ss_flags;
+    __s32 _pad;
+    __u64 ss_size;
+};
+
+// Mirror of ucontext for rt_sigframe capture
+struct ucontext_capture {
+    __u64 uc_flags;
+    __u64 uc_link;
+    struct stack_t_capture uc_stack;
+    struct sigcontext_64_capture uc_mcontext;
+    __u64 uc_sigmask;
+};
+
+// Mirror of siginfo for rt_sigframe capture
+struct siginfo_capture {
+    __s32 si_signo;
+    __s32 si_errno;
+    __s32 si_code;
+    __s32 _pad;
+    // _sifields union - we capture the _sigfault variant
+    __u64 si_addr;       // _sigfault._addr
+    __u64 _reserved[14]; // rest of the 128-byte siginfo
+};
+
+// Full rt_sigframe capture (x86_64 only)
+struct rt_sigframe_capture {
+    __u64 pretcode;
+    struct ucontext_capture uc;
+    struct siginfo_capture info;
+};
+
+// Event-specific data for rt_sigreturn
+struct rt_sigreturn_data {
+    __u64 frame_addr;                    // Address of rt_sigframe on user stack
+    __u8 read_success;                   // 1 if frame was successfully read
+    __u8 _pad[7];
+    struct rt_sigframe_capture frame;    // The captured frame data
+};
+
 // Stack probe offsets as constants (rewritten from userspace before loading)
 volatile const __s64 stack_probe_off_0 = 0;
 volatile const __s64 stack_probe_off_1 = -128;
@@ -81,6 +135,7 @@ struct event {
     struct user_regs regs;
     __u8 regs_valid;
     struct stack_probe stack_probe;
+    struct rt_sigreturn_data sigreturn_data;  // Valid for EVENT_RT_SIGRETURN
 };
 
 // Ring buffer for events
@@ -93,6 +148,12 @@ struct {
 const struct event *unused_event __attribute__((unused));
 const struct user_regs *unused_user_regs __attribute__((unused));
 const struct stack_probe *unused_stack_probe __attribute__((unused));
+const struct rt_sigframe_capture *unused_rt_sigframe_capture __attribute__((unused));
+const struct rt_sigreturn_data *unused_rt_sigreturn_data __attribute__((unused));
+const struct sigcontext_64_capture *unused_sigcontext_64_capture __attribute__((unused));
+const struct ucontext_capture *unused_ucontext_capture __attribute__((unused));
+const struct siginfo_capture *unused_siginfo_capture __attribute__((unused));
+const struct stack_t_capture *unused_stack_t_capture __attribute__((unused));
 
 // Helper to fill common event fields
 static __always_inline void fill_event(struct event *e, __u8 event_type) {
@@ -192,6 +253,26 @@ static __always_inline void probe_user_stack(struct event *e) {
     probe_stack_offset(e, sp, 3, stack_probe_off_3);
 }
 
+// Read entire rt_sigframe from user stack (x86_64 only)
+static __always_inline void read_rt_sigframe(struct event *e) {
+    e->sigreturn_data.read_success = 0;
+
+    if (!e->regs_valid) {
+        return;
+    }
+
+    __u64 frame_addr = e->regs.sp;
+    e->sigreturn_data.frame_addr = frame_addr;
+
+    // Read the entire rt_sigframe structure in one call
+    int err = bpf_probe_read_user(&e->sigreturn_data.frame,
+                                   sizeof(e->sigreturn_data.frame),
+                                   (void *)frame_addr);
+    if (err == 0) {
+        e->sigreturn_data.read_success = 1;
+    }
+}
+
 // Helper to emit a full event with stack, regs, and stack probe
 static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s64 retval) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -267,6 +348,20 @@ int BPF_KPROBE(kprobe_force_fatal_sig, int sig) {
 SEC("kprobe/force_sig")
 int BPF_KPROBE(kprobe_force_sig, int sig) {
     emit_event(ctx, EVENT_FORCE_SIG, sig);
+    return 0;
+}
+
+SEC("kprobe/__x64_sys_rt_sigreturn")
+int BPF_KPROBE(kprobe_rt_sigreturn) {
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        return 0;
+    }
+    fill_event(e, EVENT_RT_SIGRETURN);
+    capture_stack(ctx, e);
+    capture_user_regs(e);
+    read_rt_sigframe(e);
+    bpf_ringbuf_submit(e, 0);
     return 0;
 }
 

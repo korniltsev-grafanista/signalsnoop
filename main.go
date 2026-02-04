@@ -35,13 +35,14 @@ var (
 	flagSignalSetupDone = flag.Bool("signal-setup-done", true, "Enable signal_setup_done kprobe (fires on failed signal setup)")
 	flagForceFatalSig   = flag.Bool("force-fatal-sig", true, "Enable force_fatal_sig kprobe")
 	flagForceSig        = flag.Bool("force-sig", true, "Enable force_sig kprobe")
+	flagRtSigreturn     = flag.Bool("rt-sigreturn", false, "Enable rt_sigreturn kprobe")
 	flagStackProbes     = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
 	flagMapsPattern     = flag.String("maps-pattern", "", "Regex pattern to match process cmdline or exe for maps monitoring (empty = disabled)")
 	flagMapsTTLSec      = flag.Int("maps-ttl", 5, "Seconds to keep maps cached after process death")
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target amd64 -type event -type user_regs -type stack_probe -type stack_probe_entry signalsnoop ./bpf/signalsnoop.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target arm64 -type event -type user_regs -type stack_probe -type stack_probe_entry signalsnoop ./bpf/signalsnoop.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target amd64 -type event -type user_regs -type stack_probe -type stack_probe_entry -type rt_sigframe_capture -type rt_sigreturn_data -type sigcontext_64_capture -type ucontext_capture -type siginfo_capture -type stack_t_capture signalsnoop ./bpf/signalsnoop.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -no-strip -cflags "-O2 -g -Wall -Werror" -target arm64 -type event -type user_regs -type stack_probe -type stack_probe_entry -type rt_sigframe_capture -type rt_sigreturn_data -type sigcontext_64_capture -type ucontext_capture -type siginfo_capture -type stack_t_capture signalsnoop ./bpf/signalsnoop.c
 
 const maxStackDepth = 50
 
@@ -55,10 +56,12 @@ const (
 	EventSignalSetupFailed = 6
 	EventForceFatalSig     = 7
 	EventForceSig          = 8
+	EventRtSigreturn       = 9
 )
 
 var resolver *kallsyms.KAllSyms
 var mapsCache *ProcessMapsCache
+var mapsPattern *regexp.Regexp
 
 // eventInfo maps event types to their display format
 var eventInfo = map[uint8]struct {
@@ -72,6 +75,7 @@ var eventInfo = map[uint8]struct {
 	EventSignalSetupFailed: {"signal_setup_done failed", true},
 	EventForceFatalSig:     {"force_fatal_sig", true},
 	EventForceSig:          {"force_sig", true},
+	EventRtSigreturn:       {"rt_sigreturn", false},
 }
 
 func parseStackProbes(s string) ([]int64, error) {
@@ -103,6 +107,7 @@ func main() {
 		*flagSignalSetupDone = true
 		*flagForceFatalSig = true
 		*flagForceSig = true
+		*flagRtSigreturn = true
 	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -184,6 +189,7 @@ func main() {
 	attachKprobe(flagSignalSetupDone, "signal_setup_done", objs.KprobeSignalSetupDone, true)
 	attachKprobe(flagForceFatalSig, "force_fatal_sig", objs.KprobeForceFatalSig, true)
 	attachKprobe(flagForceSig, "force_sig", objs.KprobeForceSig, true)
+	attachKprobe(flagRtSigreturn, "__x64_sys_rt_sigreturn", objs.KprobeRtSigreturn, true)
 
 	// Always attach sched_process_free raw tracepoint (debug output in /sys/kernel/debug/tracing/trace_pipe)
 	if tp, err := link.AttachTracing(link.TracingOptions{Program: objs.TracepointSchedProcessFree}); err != nil {
@@ -211,14 +217,15 @@ func main() {
 	// Initialize process maps monitoring
 	var cancelMapsScanner context.CancelFunc
 	if *flagMapsPattern != "" {
-		pattern, err := regexp.Compile(*flagMapsPattern)
+		var err error
+		mapsPattern, err = regexp.Compile(*flagMapsPattern)
 		if err != nil {
 			log.Fatalf("Invalid maps-pattern regex: %v", err)
 		}
 		mapsCache = NewProcessMapsCache()
 		var ctx context.Context
 		ctx, cancelMapsScanner = context.WithCancel(context.Background())
-		go RunProcessScanner(ctx, pattern, time.Duration(*flagMapsTTLSec)*time.Second, mapsCache)
+		go RunProcessScanner(ctx, mapsPattern, time.Duration(*flagMapsTTLSec)*time.Second, mapsCache)
 		log.Printf("Process maps monitoring enabled for pattern: %s", *flagMapsPattern)
 	}
 
@@ -261,6 +268,26 @@ func printEvent(e *signalsnoopEvent) {
 
 	if e.EventType == EventGetSignalReturn {
 		fmt.Printf("get_signal returned: %d\n\n", e.Retval)
+		return
+	}
+
+	if e.EventType == EventRtSigreturn {
+		// Skip events from self
+		if e.Pid == uint32(os.Getpid()) {
+			return
+		}
+		// If maps-pattern is set, only print for matching processes (match exe only, not cmdline args)
+		if mapsPattern != nil {
+			exe := ReadProcExe(e.Pid)
+			if !mapsPattern.MatchString(exe) {
+				return
+			}
+		}
+		fmt.Printf("rt_sigreturn for tgid=%d tid=%d (%s)\n", e.Pid, e.Tid, comm)
+		printStack(e)
+		printRegs(e)
+		printRtSigreturn(e)
+		fmt.Println()
 		return
 	}
 
@@ -357,6 +384,64 @@ func printCachedMaps(pid uint32) {
 	} else {
 		fmt.Println("    no mappings found")
 	}
+}
+
+func signalName(signo int32) string {
+	names := map[int32]string{
+		1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
+		5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE",
+		9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2",
+		13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM",
+	}
+	if name, ok := names[signo]; ok {
+		return name
+	}
+	return fmt.Sprintf("SIG%d", signo)
+}
+
+func printRtSigreturn(e *signalsnoopEvent) {
+	data := &e.SigreturnData
+	if data.ReadSuccess == 0 {
+		fmt.Println("    rt_sigframe: <failed to read>")
+		return
+	}
+
+	frame := &data.Frame
+	uc := &frame.Uc
+	sc := &uc.UcMcontext
+	info := &frame.Info
+
+	fmt.Printf("    rt_sigframe at 0x%x:\n", data.FrameAddr)
+	fmt.Printf("        pretcode: 0x%x\n", frame.Pretcode)
+
+	// Signal info
+	fmt.Printf("    siginfo:\n")
+	fmt.Printf("        si_signo: %d (%s)\n", info.SiSigno, signalName(info.SiSigno))
+	fmt.Printf("        si_errno: %d\n", info.SiErrno)
+	fmt.Printf("        si_code:  %d\n", info.SiCode)
+	if info.SiSigno == 11 || info.SiSigno == 7 { // SIGSEGV or SIGBUS
+		fmt.Printf("        si_addr:  0x%x\n", info.SiAddr)
+	}
+
+	// ucontext
+	fmt.Printf("    ucontext:\n")
+	fmt.Printf("        uc_flags: 0x%x\n", uc.UcFlags)
+	fmt.Printf("        uc_link:  0x%x\n", uc.UcLink)
+	fmt.Printf("        uc_stack: ss_sp=0x%x ss_flags=%d ss_size=%d\n",
+		uc.UcStack.SsSp, uc.UcStack.SsFlags, uc.UcStack.SsSize)
+	fmt.Printf("        uc_sigmask: 0x%x\n", uc.UcSigmask)
+
+	// Saved registers (sigcontext_64)
+	fmt.Printf("    uc_mcontext (saved registers to restore):\n")
+	fmt.Printf("        rip: 0x%016x  rsp: 0x%016x  flags: 0x%016x\n", sc.Ip, sc.Sp, sc.Flags)
+	fmt.Printf("        rax: 0x%016x  rbx: 0x%016x  rcx:   0x%016x\n", sc.Ax, sc.Bx, sc.Cx)
+	fmt.Printf("        rdx: 0x%016x  rsi: 0x%016x  rdi:   0x%016x\n", sc.Dx, sc.Si, sc.Di)
+	fmt.Printf("        rbp: 0x%016x  r8:  0x%016x  r9:    0x%016x\n", sc.Bp, sc.R8, sc.R9)
+	fmt.Printf("        r10: 0x%016x  r11: 0x%016x  r12:   0x%016x\n", sc.R10, sc.R11, sc.R12)
+	fmt.Printf("        r13: 0x%016x  r14: 0x%016x  r15:   0x%016x\n", sc.R13, sc.R14, sc.R15)
+	fmt.Printf("        cs: 0x%x  gs: 0x%x  fs: 0x%x  ss: 0x%x\n", sc.Cs, sc.Gs, sc.Fs, sc.Ss)
+	fmt.Printf("        err: 0x%x  trapno: %d  oldmask: 0x%x  cr2: 0x%x\n",
+		sc.Err, sc.Trapno, sc.Oldmask, sc.Cr2)
 }
 
 func resolveSymbol(addr uint64) string {
