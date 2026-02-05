@@ -47,6 +47,9 @@ var (
 
 const maxStackDepth = 50
 
+// SA_RESTORER - x86_64 signal flag indicating sa_restorer is set
+const SA_RESTORER = 0x04000000
+
 // Event types matching the eBPF code
 const (
 	EventGetSignalEntry    = 1
@@ -317,6 +320,12 @@ func printEvent(e *signalsnoopEvent) {
 		fmt.Printf("%s for tgid=%d tid=%d (%s), sig=%d\n", info.name, e.Pid, e.Tid, comm, e.Retval)
 	} else {
 		fmt.Printf("%s for tgid=%d tid=%d (%s)\n", info.name, e.Pid, e.Tid, comm)
+	}
+
+	// Print sa_flags for x64_setup_rt_frame failures
+	if e.EventType == EventX64RtFrameFailed {
+		hasRestorer := e.SaFlags&SA_RESTORER != 0
+		fmt.Printf("    sa_flags: 0x%x (SA_RESTORER=%v)\n", e.SaFlags, hasRestorer)
 	}
 	printStack(e)
 	printRegs(e)

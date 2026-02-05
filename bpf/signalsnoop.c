@@ -131,6 +131,7 @@ struct event {
     char comm[TASK_COMM_LEN];
     __u8 event_type;
     __s64 retval;
+    __u64 sa_flags;  // Valid for EVENT_X64_RT_FRAME_FAILED
     __s32 stack_depth;
     __u64 stack[MAX_STACK_DEPTH];
     struct user_regs regs;
@@ -145,12 +146,18 @@ struct {
     __uint(max_entries, 256 * 1024); // 256 KB
 } events SEC(".maps");
 
-// Hash map to pass signal number from kprobe to kretprobe for x64_setup_rt_frame
+// Data passed from kprobe to kretprobe for x64_setup_rt_frame
+struct x64_setup_rt_frame_data {
+    __s32 sig;
+    __u64 sa_flags;
+};
+
+// Hash map to pass signal data from kprobe to kretprobe for x64_setup_rt_frame
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 10240);
     __type(key, __u32);    // tid
-    __type(value, __s32);  // sig
+    __type(value, struct x64_setup_rt_frame_data);
 } x64_setup_rt_frame__signals SEC(".maps");
 
 // Force BTF type export for bpf2go type generation
@@ -384,12 +391,15 @@ int BPF_KPROBE(kprobe_rt_sigreturn) {
 }
 
 // int x64_setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs)
-// Store signal number in hash map for retrieval in kretprobe
+// Store signal number and sa_flags in hash map for retrieval in kretprobe
 SEC("kprobe/x64_setup_rt_frame")
 int BPF_KPROBE(kprobe_x64_setup_rt_frame, struct ksignal *ksig) {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
-    __s32 sig = BPF_CORE_READ(ksig, sig);
-    bpf_map_update_elem(&x64_setup_rt_frame__signals, &tid, &sig, BPF_ANY);
+    struct x64_setup_rt_frame_data data = {
+        .sig = BPF_CORE_READ(ksig, sig),
+        .sa_flags = BPF_CORE_READ(ksig, ka.sa.sa_flags),
+    };
+    bpf_map_update_elem(&x64_setup_rt_frame__signals, &tid, &data, BPF_ANY);
     return 0;
 }
 
@@ -397,14 +407,28 @@ int BPF_KPROBE(kprobe_x64_setup_rt_frame, struct ksignal *ksig) {
 SEC("kretprobe/x64_setup_rt_frame")
 int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
-    __s32 *sig = bpf_map_lookup_elem(&x64_setup_rt_frame__signals, &tid);
-    __s32 signal = sig ? *sig : 0;
+    struct x64_setup_rt_frame_data *data = bpf_map_lookup_elem(&x64_setup_rt_frame__signals, &tid);
+    __s32 signal = data ? data->sig : 0;
+    __u64 sa_flags = data ? data->sa_flags : 0;
     bpf_map_delete_elem(&x64_setup_rt_frame__signals, &tid);
 
     if (ret == 0) {
         return 0;
     }
-    emit_event(ctx, EVENT_X64_RT_FRAME_FAILED, signal);
+
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        return 0;
+    }
+
+    fill_event(e, EVENT_X64_RT_FRAME_FAILED);
+    e->retval = signal;
+    e->sa_flags = sa_flags;
+    capture_stack(ctx, e);
+    capture_user_regs(e);
+    probe_user_stack(e);
+
+    bpf_ringbuf_submit(e, 0);
     return 0;
 }
 

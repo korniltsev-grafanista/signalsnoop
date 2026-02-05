@@ -20,6 +20,7 @@ type signalsnoopEvent struct {
 	EventType     uint8
 	_             [7]byte
 	Retval        int64
+	SaFlags       uint64
 	StackDepth    int32
 	_             [4]byte
 	Stack         [50]uint64
@@ -126,6 +127,12 @@ type signalsnoopUserRegs struct {
 	R13   uint64
 	R14   uint64
 	R15   uint64
+}
+
+type signalsnoopX64SetupRtFrameData struct {
+	Sig     int32
+	_       [4]byte
+	SaFlags uint64
 }
 
 // loadSignalsnoop returns the embedded CollectionSpec for signalsnoop.
