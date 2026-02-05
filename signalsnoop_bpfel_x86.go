@@ -186,6 +186,7 @@ type signalsnoopProgramSpecs struct {
 	KprobeSignalSetupDone      *ebpf.ProgramSpec `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.ProgramSpec `ebpf:"kprobe_vfs_coredump"`
 	KprobeX64SetupRtFrame      *ebpf.ProgramSpec `ebpf:"kprobe_x64_setup_rt_frame"`
+	KretprobeCopySiginfoToUser *ebpf.ProgramSpec `ebpf:"kretprobe_copy_siginfo_to_user"`
 	KretprobeGetSignal         *ebpf.ProgramSpec `ebpf:"kretprobe_get_signal"`
 	KretprobeX64SetupRtFrame   *ebpf.ProgramSpec `ebpf:"kretprobe_x64_setup_rt_frame"`
 	TracepointSchedProcessFree *ebpf.ProgramSpec `ebpf:"tracepoint__sched_process_free"`
@@ -243,6 +244,7 @@ type signalsnoopPrograms struct {
 	KprobeSignalSetupDone      *ebpf.Program `ebpf:"kprobe_signal_setup_done"`
 	KprobeVfsCoredump          *ebpf.Program `ebpf:"kprobe_vfs_coredump"`
 	KprobeX64SetupRtFrame      *ebpf.Program `ebpf:"kprobe_x64_setup_rt_frame"`
+	KretprobeCopySiginfoToUser *ebpf.Program `ebpf:"kretprobe_copy_siginfo_to_user"`
 	KretprobeGetSignal         *ebpf.Program `ebpf:"kretprobe_get_signal"`
 	KretprobeX64SetupRtFrame   *ebpf.Program `ebpf:"kretprobe_x64_setup_rt_frame"`
 	TracepointSchedProcessFree *ebpf.Program `ebpf:"tracepoint__sched_process_free"`
@@ -260,6 +262,7 @@ func (p *signalsnoopPrograms) Close() error {
 		p.KprobeSignalSetupDone,
 		p.KprobeVfsCoredump,
 		p.KprobeX64SetupRtFrame,
+		p.KretprobeCopySiginfoToUser,
 		p.KretprobeGetSignal,
 		p.KretprobeX64SetupRtFrame,
 		p.TracepointSchedProcessFree,

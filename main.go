@@ -36,8 +36,9 @@ var (
 	flagForceFatalSig   = flag.Bool("force-fatal-sig", true, "Enable force_fatal_sig kprobe")
 	flagForceSig        = flag.Bool("force-sig", true, "Enable force_sig kprobe")
 	flagRtSigreturn     = flag.Bool("rt-sigreturn", false, "Enable rt_sigreturn kprobe")
-	flagX64SetupRtFrame = flag.Bool("x64-setup-rt-frame", true, "Enable x64_setup_rt_frame kretprobe (fires on failure)")
-	flagStackProbes     = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
+	flagX64SetupRtFrame      = flag.Bool("x64-setup-rt-frame", true, "Enable x64_setup_rt_frame kretprobe (fires on failure)")
+	flagCopySiginfoToUser    = flag.Bool("copy-siginfo-to-user", true, "Enable copy_siginfo_to_user kretprobe (fires on failure)")
+	flagStackProbes          = flag.String("stack-probes", "0,-128,-568,-700", "Comma-separated list of stack probe offsets from sp (max 4)")
 	flagMapsPattern     = flag.String("maps-pattern", "", "Regex pattern to match process cmdline or exe for maps monitoring (empty = disabled)")
 	flagMapsTTLSec      = flag.Int("maps-ttl", 5, "Seconds to keep maps cached after process death")
 )
@@ -60,8 +61,9 @@ const (
 	EventSignalSetupFailed = 6
 	EventForceFatalSig     = 7
 	EventForceSig          = 8
-	EventRtSigreturn       = 9
-	EventX64RtFrameFailed  = 10
+	EventRtSigreturn              = 9
+	EventX64RtFrameFailed         = 10
+	EventCopySiginfoToUserFailed  = 11
 )
 
 var resolver *kallsyms.KAllSyms
@@ -80,8 +82,9 @@ var eventInfo = map[uint8]struct {
 	EventSignalSetupFailed: {"signal_setup_done failed", true},
 	EventForceFatalSig:     {"force_fatal_sig", true},
 	EventForceSig:          {"force_sig", true},
-	EventRtSigreturn:       {"rt_sigreturn", false},
-	EventX64RtFrameFailed:  {"x64_setup_rt_frame failed", true},
+	EventRtSigreturn:             {"rt_sigreturn", false},
+	EventX64RtFrameFailed:        {"x64_setup_rt_frame failed", true},
+	EventCopySiginfoToUserFailed: {"copy_siginfo_to_user failed", true},
 }
 
 func parseStackProbes(s string) ([]int64, error) {
@@ -115,6 +118,7 @@ func main() {
 		*flagForceSig = true
 		*flagRtSigreturn = true
 		*flagX64SetupRtFrame = true
+		*flagCopySiginfoToUser = true
 	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -208,6 +212,7 @@ func main() {
 	attachKprobe(flagRtSigreturn, "__x64_sys_rt_sigreturn", objs.KprobeRtSigreturn)
 	attachKprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KprobeX64SetupRtFrame)
 	attachKretprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KretprobeX64SetupRtFrame)
+	attachKretprobe(flagCopySiginfoToUser, "copy_siginfo_to_user", objs.KretprobeCopySiginfoToUser)
 
 	// Attach sched_process_free raw tracepoint
 	if tp, err := link.AttachTracing(link.TracingOptions{Program: objs.TracepointSchedProcessFree}); err != nil {

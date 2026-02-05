@@ -21,6 +21,7 @@ char __license[] SEC("license") = "GPL";
 #define EVENT_FORCE_SIG          8
 #define EVENT_RT_SIGRETURN       9
 #define EVENT_X64_RT_FRAME_FAILED 10
+#define EVENT_COPY_SIGINFO_TO_USER_FAILED 11
 
 // Userspace registers structure (architecture-independent subset)
 struct user_regs {
@@ -429,6 +430,16 @@ int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
     probe_user_stack(e);
 
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+// copy_siginfo_to_user returns 0 on success, negative on failure
+SEC("kretprobe/copy_siginfo_to_user")
+int BPF_KRETPROBE(kretprobe_copy_siginfo_to_user, int ret) {
+    if (ret == 0) {
+        return 0;
+    }
+    emit_event(ctx, EVENT_COPY_SIGINFO_TO_USER_FAILED, ret);
     return 0;
 }
 
