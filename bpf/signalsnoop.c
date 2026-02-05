@@ -146,7 +146,7 @@ struct event {
 // Ring buffer for events
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024); // 256 KB
+    __uint(max_entries, 16 * 1024 * 1024); // 16 MB
 } events SEC(".maps");
 
 // Data passed from kprobe to kretprobe for x64_setup_rt_frame
@@ -299,6 +299,7 @@ static __always_inline void read_rt_sigframe(struct event *e) {
 static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s64 retval) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
+        bpf_printk("signalsnoop: ringbuf reserve failed for event_type=%d", event_type);
         return;
     }
 
@@ -321,6 +322,7 @@ SEC("kretprobe/get_signal")
 int BPF_KRETPROBE(kretprobe_get_signal, long ret) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
+        bpf_printk("signalsnoop: ringbuf reserve failed for get_signal return");
         return 0;
     }
 
@@ -383,6 +385,7 @@ SEC("kprobe/__x64_sys_rt_sigreturn")
 int BPF_KPROBE(kprobe_rt_sigreturn) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
+        bpf_printk("signalsnoop: ringbuf reserve failed for rt_sigreturn");
         return 0;
     }
     fill_event(e, EVENT_RT_SIGRETURN);
@@ -421,6 +424,7 @@ int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
 
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
+        bpf_printk("signalsnoop: ringbuf reserve failed for x64_setup_rt_frame");
         return 0;
     }
 
@@ -438,9 +442,10 @@ int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
 // copy_siginfo_to_user returns 0 on success, negative on failure
 SEC("kretprobe/copy_siginfo_to_user")
 int BPF_KRETPROBE(kretprobe_copy_siginfo_to_user, int ret) {
-    if (ret == 0) {
-        return 0;
-    }
+    // TODO: temporarily emit all events for debugging
+    // if (ret == 0) {
+    //     return 0;
+    // }
     emit_event(ctx, EVENT_COPY_SIGINFO_TO_USER_FAILED, ret);
     return 0;
 }
@@ -458,10 +463,11 @@ int BPF_KRETPROBE(kretprobe_setup_signal_shadow_stack, int ret) {
 // get_sigframe returns (void __user *)-1L on failure
 SEC("kretprobe/get_sigframe")
 int BPF_KRETPROBE(kretprobe_get_sigframe, void *ret) {
-    if (ret != (void *)-1L) {
-        return 0;
-    }
-    emit_event(ctx, EVENT_GET_SIGFRAME_FAILED, 0);
+    // TODO: temporarily emit all events for debugging
+    // if (ret != (void *)-1L) {
+    //     return 0;
+    // }
+    emit_event(ctx, EVENT_GET_SIGFRAME_FAILED, (__s64)ret);
     return 0;
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -88,9 +87,9 @@ var eventInfo = map[uint8]struct {
 	EventForceSig:          {"force_sig", true},
 	EventRtSigreturn:                  {"rt_sigreturn", false},
 	EventX64RtFrameFailed:             {"x64_setup_rt_frame failed", true},
-	EventCopySiginfoToUserFailed:      {"copy_siginfo_to_user failed", true},
+	EventCopySiginfoToUserFailed:      {"copy_siginfo_to_user", true},
 	EventSetupSignalShadowStackFailed: {"setup_signal_shadow_stack failed", true},
-	EventGetSigframeFailed:            {"get_sigframe failed", false},
+	EventGetSigframeFailed:            {"get_sigframe", true},
 }
 
 func parseStackProbes(s string) ([]int64, error) {
@@ -269,24 +268,49 @@ func main() {
 	fmt.Println("Tracing signal events... Press Ctrl+C to stop.")
 	fmt.Println()
 
+	// Buffered channel for passing raw event bytes from reader to handler
+	// Large buffer to avoid dropping events during bursts
+	eventChan := make(chan []byte, 100000)
+
+	// Multiple event handler goroutines for parallel parsing
+	const numHandlers = 4
+	for i := 0; i < numHandlers; i++ {
+		go func() {
+			for rawEvent := range eventChan {
+				// Use unsafe pointer cast instead of slow binary.Read
+				if len(rawEvent) < int(unsafe.Sizeof(signalsnoopEvent{})) {
+					log.Printf("Event too small: %d bytes", len(rawEvent))
+					continue
+				}
+				event := *(*signalsnoopEvent)(unsafe.Pointer(&rawEvent[0]))
+				printEvent(&event)
+			}
+		}()
+	}
+
+	// Event reader goroutine - minimal work, just copy bytes
 	go func() {
 		for {
 			record, err := rd.Read()
 			if err != nil {
 				if errors.Is(err, ringbuf.ErrClosed) {
+					close(eventChan)
 					return
 				}
 				log.Printf("Error reading from ring buffer: %v", err)
 				continue
 			}
 
-			var event signalsnoopEvent
-			if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
-				log.Printf("Error parsing event: %v", err)
-				continue
-			}
+			// Copy raw bytes to avoid holding reference to ring buffer memory
+			rawCopy := make([]byte, len(record.RawSample))
+			copy(rawCopy, record.RawSample)
 
-			printEvent(&event)
+			// Non-blocking send to channel
+			select {
+			case eventChan <- rawCopy:
+			default:
+				log.Printf("Event channel full, dropping event")
+			}
 		}
 	}()
 
@@ -321,6 +345,44 @@ func printEvent(e *signalsnoopEvent) {
 		printStack(e)
 		printRegs(e)
 		printRtSigreturn(e)
+		fmt.Println()
+		return
+	}
+
+	if e.EventType == EventGetSigframeFailed {
+		// Skip events from self
+		if e.Pid == uint32(os.Getpid()) {
+			return
+		}
+		// If maps-pattern is set, only print for matching processes (match exe only, not cmdline args)
+		if mapsPattern != nil {
+			exe := ReadProcExe(e.Pid)
+			if !mapsPattern.MatchString(exe) {
+				return
+			}
+		}
+		fmt.Printf("get_sigframe for tgid=%d tid=%d (%s), ret=0x%x\n", e.Pid, e.Tid, comm, e.Retval)
+		printStack(e)
+		printRegs(e)
+		fmt.Println()
+		return
+	}
+
+	if e.EventType == EventCopySiginfoToUserFailed {
+		// Skip events from self
+		if e.Pid == uint32(os.Getpid()) {
+			return
+		}
+		// If maps-pattern is set, only print for matching processes (match exe only, not cmdline args)
+		if mapsPattern != nil {
+			exe := ReadProcExe(e.Pid)
+			if !mapsPattern.MatchString(exe) {
+				return
+			}
+		}
+		fmt.Printf("copy_siginfo_to_user for tgid=%d tid=%d (%s), ret=%d\n", e.Pid, e.Tid, comm, e.Retval)
+		printStack(e)
+		printRegs(e)
 		fmt.Println()
 		return
 	}
