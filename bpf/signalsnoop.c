@@ -263,6 +263,8 @@ static __always_inline void probe_user_stack(struct event *e) {
 }
 
 // Read entire rt_sigframe from user stack (x86_64 only)
+// The frame starts at sp - 8 because the signal handler's 'ret' instruction
+// already popped the pretcode (return address) off the stack.
 static __always_inline void read_rt_sigframe(struct event *e) {
     e->sigreturn_data.read_success = 0;
 
@@ -270,7 +272,8 @@ static __always_inline void read_rt_sigframe(struct event *e) {
         return;
     }
 
-    __u64 frame_addr = e->regs.sp;
+    // Adjust for the popped return address (same as kernel: sp - sizeof(long))
+    __u64 frame_addr = e->regs.sp - sizeof(__u64);
     e->sigreturn_data.frame_addr = frame_addr;
 
     // Read the entire rt_sigframe structure in one call

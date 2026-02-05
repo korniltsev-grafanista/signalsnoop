@@ -322,7 +322,7 @@ func printEvent(e *signalsnoopEvent) {
 	printRegs(e)
 	printStackProbe(e)
 	if e.EventType == EventVfsCoredump {
-		printCachedMaps(e.Pid)
+		printCachedMaps(e.Pid, e)
 	}
 	fmt.Println()
 }
@@ -386,7 +386,7 @@ func printStackProbe(e *signalsnoopEvent) {
 	}
 }
 
-func printCachedMaps(pid uint32) {
+func printCachedMaps(pid uint32, e *signalsnoopEvent) {
 	if mapsCache == nil {
 		return
 	}
@@ -394,7 +394,12 @@ func printCachedMaps(pid uint32) {
 		fmt.Println("    Process maps:")
 		for _, line := range strings.Split(maps, "\n") {
 			if line != "" {
-				fmt.Printf("        %s\n", line)
+				regInfo := findRegistersInMapLine(line, e)
+				if regInfo != "" {
+					fmt.Printf("        %s  <-- %s\n", line, regInfo)
+				} else {
+					fmt.Printf("        %s\n", line)
+				}
 			}
 		}
 	} else {
@@ -402,17 +407,85 @@ func printCachedMaps(pid uint32) {
 	}
 }
 
+// parseMapRange extracts the start and end addresses from a /proc/pid/maps line
+// Line format: "55e8f4600000-55e8f4628000 r--p ..."
+func parseMapRange(line string) (start, end uint64, ok bool) {
+	parts := strings.Fields(line)
+	if len(parts) < 1 {
+		return 0, 0, false
+	}
+	addrRange := parts[0]
+	idx := strings.Index(addrRange, "-")
+	if idx < 0 {
+		return 0, 0, false
+	}
+	start, err1 := strconv.ParseUint(addrRange[:idx], 16, 64)
+	end, err2 := strconv.ParseUint(addrRange[idx+1:], 16, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// findRegistersInMapLine returns a string listing which registers point into this map range
+func findRegistersInMapLine(line string, e *signalsnoopEvent) string {
+	if e.RegsValid == 0 {
+		return ""
+	}
+	start, end, ok := parseMapRange(line)
+	if !ok {
+		return ""
+	}
+
+	r := &e.Regs
+	regs := []struct {
+		name string
+		val  uint64
+	}{
+		{"rip", r.Ip},
+		{"rsp", r.Sp},
+		{"rbp", r.Bp},
+		{"rax", r.Ax},
+		{"rbx", r.Bx},
+		{"rcx", r.Cx},
+		{"rdx", r.Dx},
+		{"rsi", r.Si},
+		{"rdi", r.Di},
+		{"r8", r.R8},
+		{"r9", r.R9},
+		{"r10", r.R10},
+		{"r11", r.R11},
+		{"r12", r.R12},
+		{"r13", r.R13},
+		{"r14", r.R14},
+		{"r15", r.R15},
+	}
+
+	var matched []string
+	for _, reg := range regs {
+		if reg.val >= start && reg.val < end {
+			matched = append(matched, fmt.Sprintf("%s=0x%x", reg.name, reg.val))
+		}
+	}
+
+	return strings.Join(matched, ", ")
+}
+
 func signalName(signo int32) string {
 	names := map[int32]string{
 		1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
 		5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE",
 		9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2",
-		13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM",
+		13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM", 16: "SIGSTKFLT",
+		17: "SIGCHLD", 18: "SIGCONT", 19: "SIGSTOP", 20: "SIGTSTP",
+		21: "SIGTTIN", 22: "SIGTTOU", 23: "SIGURG", 24: "SIGXCPU",
+		25: "SIGXFSZ", 26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH",
+		29: "SIGIO", 30: "SIGPWR", 31: "SIGSYS",
 	}
 	if name, ok := names[signo]; ok {
-		return name
+		return fmt.Sprintf("%s(%d)", name, signo)
 	}
-	return fmt.Sprintf("SIG%d", signo)
+	return fmt.Sprintf("SIG(%d)", signo)
 }
 
 func printRtSigreturn(e *signalsnoopEvent) {
