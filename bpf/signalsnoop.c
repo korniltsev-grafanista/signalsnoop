@@ -22,6 +22,8 @@ char __license[] SEC("license") = "GPL";
 #define EVENT_RT_SIGRETURN       9
 #define EVENT_X64_RT_FRAME_FAILED 10
 #define EVENT_COPY_SIGINFO_TO_USER_FAILED 11
+#define EVENT_SETUP_SIGNAL_SHADOW_STACK_FAILED 12
+#define EVENT_GET_SIGFRAME_FAILED 13
 
 // Userspace registers structure (architecture-independent subset)
 struct user_regs {
@@ -440,6 +442,26 @@ int BPF_KRETPROBE(kretprobe_copy_siginfo_to_user, int ret) {
         return 0;
     }
     emit_event(ctx, EVENT_COPY_SIGINFO_TO_USER_FAILED, ret);
+    return 0;
+}
+
+// setup_signal_shadow_stack returns 0 on success, negative on failure
+SEC("kretprobe/setup_signal_shadow_stack")
+int BPF_KRETPROBE(kretprobe_setup_signal_shadow_stack, int ret) {
+    if (ret == 0) {
+        return 0;
+    }
+    emit_event(ctx, EVENT_SETUP_SIGNAL_SHADOW_STACK_FAILED, ret);
+    return 0;
+}
+
+// get_sigframe returns (void __user *)-1L on failure
+SEC("kretprobe/get_sigframe")
+int BPF_KRETPROBE(kretprobe_get_sigframe, void *ret) {
+    if (ret != (void *)-1L) {
+        return 0;
+    }
+    emit_event(ctx, EVENT_GET_SIGFRAME_FAILED, 0);
     return 0;
 }
 

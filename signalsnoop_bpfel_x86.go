@@ -176,20 +176,22 @@ type signalsnoopSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type signalsnoopProgramSpecs struct {
-	KprobeDoCoredump           *ebpf.ProgramSpec `ebpf:"kprobe_do_coredump"`
-	KprobeDoGroupExit          *ebpf.ProgramSpec `ebpf:"kprobe_do_group_exit"`
-	KprobeForceFatalSig        *ebpf.ProgramSpec `ebpf:"kprobe_force_fatal_sig"`
-	KprobeForceSig             *ebpf.ProgramSpec `ebpf:"kprobe_force_sig"`
-	KprobeForceSigsegv         *ebpf.ProgramSpec `ebpf:"kprobe_force_sigsegv"`
-	KprobeGetSignal            *ebpf.ProgramSpec `ebpf:"kprobe_get_signal"`
-	KprobeRtSigreturn          *ebpf.ProgramSpec `ebpf:"kprobe_rt_sigreturn"`
-	KprobeSignalSetupDone      *ebpf.ProgramSpec `ebpf:"kprobe_signal_setup_done"`
-	KprobeVfsCoredump          *ebpf.ProgramSpec `ebpf:"kprobe_vfs_coredump"`
-	KprobeX64SetupRtFrame      *ebpf.ProgramSpec `ebpf:"kprobe_x64_setup_rt_frame"`
-	KretprobeCopySiginfoToUser *ebpf.ProgramSpec `ebpf:"kretprobe_copy_siginfo_to_user"`
-	KretprobeGetSignal         *ebpf.ProgramSpec `ebpf:"kretprobe_get_signal"`
-	KretprobeX64SetupRtFrame   *ebpf.ProgramSpec `ebpf:"kretprobe_x64_setup_rt_frame"`
-	TracepointSchedProcessFree *ebpf.ProgramSpec `ebpf:"tracepoint__sched_process_free"`
+	KprobeDoCoredump                *ebpf.ProgramSpec `ebpf:"kprobe_do_coredump"`
+	KprobeDoGroupExit               *ebpf.ProgramSpec `ebpf:"kprobe_do_group_exit"`
+	KprobeForceFatalSig             *ebpf.ProgramSpec `ebpf:"kprobe_force_fatal_sig"`
+	KprobeForceSig                  *ebpf.ProgramSpec `ebpf:"kprobe_force_sig"`
+	KprobeForceSigsegv              *ebpf.ProgramSpec `ebpf:"kprobe_force_sigsegv"`
+	KprobeGetSignal                 *ebpf.ProgramSpec `ebpf:"kprobe_get_signal"`
+	KprobeRtSigreturn               *ebpf.ProgramSpec `ebpf:"kprobe_rt_sigreturn"`
+	KprobeSignalSetupDone           *ebpf.ProgramSpec `ebpf:"kprobe_signal_setup_done"`
+	KprobeVfsCoredump               *ebpf.ProgramSpec `ebpf:"kprobe_vfs_coredump"`
+	KprobeX64SetupRtFrame           *ebpf.ProgramSpec `ebpf:"kprobe_x64_setup_rt_frame"`
+	KretprobeCopySiginfoToUser      *ebpf.ProgramSpec `ebpf:"kretprobe_copy_siginfo_to_user"`
+	KretprobeGetSigframe            *ebpf.ProgramSpec `ebpf:"kretprobe_get_sigframe"`
+	KretprobeGetSignal              *ebpf.ProgramSpec `ebpf:"kretprobe_get_signal"`
+	KretprobeSetupSignalShadowStack *ebpf.ProgramSpec `ebpf:"kretprobe_setup_signal_shadow_stack"`
+	KretprobeX64SetupRtFrame        *ebpf.ProgramSpec `ebpf:"kretprobe_x64_setup_rt_frame"`
+	TracepointSchedProcessFree      *ebpf.ProgramSpec `ebpf:"tracepoint__sched_process_free"`
 }
 
 // signalsnoopMapSpecs contains maps before they are loaded into the kernel.
@@ -234,20 +236,22 @@ func (m *signalsnoopMaps) Close() error {
 //
 // It can be passed to loadSignalsnoopObjects or ebpf.CollectionSpec.LoadAndAssign.
 type signalsnoopPrograms struct {
-	KprobeDoCoredump           *ebpf.Program `ebpf:"kprobe_do_coredump"`
-	KprobeDoGroupExit          *ebpf.Program `ebpf:"kprobe_do_group_exit"`
-	KprobeForceFatalSig        *ebpf.Program `ebpf:"kprobe_force_fatal_sig"`
-	KprobeForceSig             *ebpf.Program `ebpf:"kprobe_force_sig"`
-	KprobeForceSigsegv         *ebpf.Program `ebpf:"kprobe_force_sigsegv"`
-	KprobeGetSignal            *ebpf.Program `ebpf:"kprobe_get_signal"`
-	KprobeRtSigreturn          *ebpf.Program `ebpf:"kprobe_rt_sigreturn"`
-	KprobeSignalSetupDone      *ebpf.Program `ebpf:"kprobe_signal_setup_done"`
-	KprobeVfsCoredump          *ebpf.Program `ebpf:"kprobe_vfs_coredump"`
-	KprobeX64SetupRtFrame      *ebpf.Program `ebpf:"kprobe_x64_setup_rt_frame"`
-	KretprobeCopySiginfoToUser *ebpf.Program `ebpf:"kretprobe_copy_siginfo_to_user"`
-	KretprobeGetSignal         *ebpf.Program `ebpf:"kretprobe_get_signal"`
-	KretprobeX64SetupRtFrame   *ebpf.Program `ebpf:"kretprobe_x64_setup_rt_frame"`
-	TracepointSchedProcessFree *ebpf.Program `ebpf:"tracepoint__sched_process_free"`
+	KprobeDoCoredump                *ebpf.Program `ebpf:"kprobe_do_coredump"`
+	KprobeDoGroupExit               *ebpf.Program `ebpf:"kprobe_do_group_exit"`
+	KprobeForceFatalSig             *ebpf.Program `ebpf:"kprobe_force_fatal_sig"`
+	KprobeForceSig                  *ebpf.Program `ebpf:"kprobe_force_sig"`
+	KprobeForceSigsegv              *ebpf.Program `ebpf:"kprobe_force_sigsegv"`
+	KprobeGetSignal                 *ebpf.Program `ebpf:"kprobe_get_signal"`
+	KprobeRtSigreturn               *ebpf.Program `ebpf:"kprobe_rt_sigreturn"`
+	KprobeSignalSetupDone           *ebpf.Program `ebpf:"kprobe_signal_setup_done"`
+	KprobeVfsCoredump               *ebpf.Program `ebpf:"kprobe_vfs_coredump"`
+	KprobeX64SetupRtFrame           *ebpf.Program `ebpf:"kprobe_x64_setup_rt_frame"`
+	KretprobeCopySiginfoToUser      *ebpf.Program `ebpf:"kretprobe_copy_siginfo_to_user"`
+	KretprobeGetSigframe            *ebpf.Program `ebpf:"kretprobe_get_sigframe"`
+	KretprobeGetSignal              *ebpf.Program `ebpf:"kretprobe_get_signal"`
+	KretprobeSetupSignalShadowStack *ebpf.Program `ebpf:"kretprobe_setup_signal_shadow_stack"`
+	KretprobeX64SetupRtFrame        *ebpf.Program `ebpf:"kretprobe_x64_setup_rt_frame"`
+	TracepointSchedProcessFree      *ebpf.Program `ebpf:"tracepoint__sched_process_free"`
 }
 
 func (p *signalsnoopPrograms) Close() error {
@@ -263,7 +267,9 @@ func (p *signalsnoopPrograms) Close() error {
 		p.KprobeVfsCoredump,
 		p.KprobeX64SetupRtFrame,
 		p.KretprobeCopySiginfoToUser,
+		p.KretprobeGetSigframe,
 		p.KretprobeGetSignal,
+		p.KretprobeSetupSignalShadowStack,
 		p.KretprobeX64SetupRtFrame,
 		p.TracepointSchedProcessFree,
 	)
