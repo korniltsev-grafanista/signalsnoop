@@ -133,7 +133,8 @@ struct event {
     __u64 timestamp;
     char comm[TASK_COMM_LEN];
     __u8 event_type;
-    __s64 retval;
+    __s32 sig;       // Signal number (if applicable)
+    __s64 retval;    // Return value for kretprobes
     __u64 sa_flags;  // Valid for EVENT_X64_RT_FRAME_FAILED
     __s32 stack_depth;
     __u64 stack[MAX_STACK_DEPTH];
@@ -163,6 +164,14 @@ struct {
     __type(value, struct x64_setup_rt_frame_data);
 } x64_setup_rt_frame__signals SEC(".maps");
 
+// Hash map to pass signal number from kprobe to kretprobe for copy_siginfo_to_user
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);    // tid
+    __type(value, __s32);  // sig
+} copy_siginfo_to_user__signals SEC(".maps");
+
 // Force BTF type export for bpf2go type generation
 const struct event *unused_event __attribute__((unused));
 const struct user_regs *unused_user_regs __attribute__((unused));
@@ -181,6 +190,7 @@ static __always_inline void fill_event(struct event *e, __u8 event_type) {
     e->tid = (__u32)pid_tgid;
     e->timestamp = bpf_ktime_get_ns();
     e->event_type = event_type;
+    e->sig = 0;
     e->retval = 0;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 }
@@ -296,7 +306,7 @@ static __always_inline void read_rt_sigframe(struct event *e) {
 }
 
 // Helper to emit a full event with stack, regs, and stack probe
-static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s64 retval) {
+static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s32 sig, __s64 retval) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
         bpf_printk("signalsnoop: ringbuf reserve failed for event_type=%d", event_type);
@@ -304,6 +314,7 @@ static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s
     }
 
     fill_event(e, event_type);
+    e->sig = sig;
     e->retval = retval;
     capture_stack(ctx, e);
     capture_user_regs(e);
@@ -314,7 +325,7 @@ static __always_inline void emit_event(struct pt_regs *ctx, __u8 event_type, __s
 
 SEC("kprobe/get_signal")
 int BPF_KPROBE(kprobe_get_signal) {
-    emit_event(ctx, EVENT_GET_SIGNAL_ENTRY, 0);
+    emit_event(ctx, EVENT_GET_SIGNAL_ENTRY, 0, 0);
     return 0;
 }
 
@@ -337,25 +348,25 @@ int BPF_KRETPROBE(kretprobe_get_signal, long ret) {
 
 SEC("kprobe/vfs_coredump")
 int BPF_KPROBE(kprobe_vfs_coredump) {
-    emit_event(ctx, EVENT_VFS_COREDUMP, 0);
+    emit_event(ctx, EVENT_VFS_COREDUMP, 0, 0);
     return 0;
 }
 
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe_do_coredump) {
-    emit_event(ctx, EVENT_VFS_COREDUMP, 0);
+    emit_event(ctx, EVENT_VFS_COREDUMP, 0, 0);
     return 0;
 }
 
 SEC("kprobe/do_group_exit")
 int BPF_KPROBE(kprobe_do_group_exit) {
-    emit_event(ctx, EVENT_DO_GROUP_EXIT, 0);
+    emit_event(ctx, EVENT_DO_GROUP_EXIT, 0, 0);
     return 0;
 }
 
 SEC("kprobe/force_sigsegv")
 int BPF_KPROBE(kprobe_force_sigsegv) {
-    emit_event(ctx, EVENT_FORCE_SIGSEGV, 0);
+    emit_event(ctx, EVENT_FORCE_SIGSEGV, 0, 0);
     return 0;
 }
 
@@ -365,19 +376,19 @@ int BPF_KPROBE(kprobe_signal_setup_done, int failed, struct ksignal *ksig, int s
     if (failed == 0) {
         return 0;
     }
-    emit_event(ctx, EVENT_SIGNAL_SETUP_FAILED, BPF_CORE_READ(ksig, sig));
+    emit_event(ctx, EVENT_SIGNAL_SETUP_FAILED, BPF_CORE_READ(ksig, sig), failed);
     return 0;
 }
 
 SEC("kprobe/force_fatal_sig")
 int BPF_KPROBE(kprobe_force_fatal_sig, int sig) {
-    emit_event(ctx, EVENT_FORCE_FATAL_SIG, sig);
+    emit_event(ctx, EVENT_FORCE_FATAL_SIG, sig, 0);
     return 0;
 }
 
 SEC("kprobe/force_sig")
 int BPF_KPROBE(kprobe_force_sig, int sig) {
-    emit_event(ctx, EVENT_FORCE_SIG, sig);
+    emit_event(ctx, EVENT_FORCE_SIG, sig, 0);
     return 0;
 }
 
@@ -429,7 +440,8 @@ int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
     }
 
     fill_event(e, EVENT_X64_RT_FRAME_FAILED);
-    e->retval = signal;
+    e->sig = signal;
+    e->retval = ret;
     e->sa_flags = sa_flags;
     capture_stack(ctx, e);
     capture_user_regs(e);
@@ -439,14 +451,29 @@ int BPF_KRETPROBE(kretprobe_x64_setup_rt_frame, int ret) {
     return 0;
 }
 
+// int copy_siginfo_to_user(siginfo_t __user *to, const siginfo_t *from)
+// Store signal number in hash map for retrieval in kretprobe
+SEC("kprobe/copy_siginfo_to_user")
+int BPF_KPROBE(kprobe_copy_siginfo_to_user, void *to, struct siginfo *from) {
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __s32 sig = BPF_CORE_READ(from, si_signo);
+    bpf_map_update_elem(&copy_siginfo_to_user__signals, &tid, &sig, BPF_ANY);
+    return 0;
+}
+
 // copy_siginfo_to_user returns 0 on success, negative on failure
 SEC("kretprobe/copy_siginfo_to_user")
 int BPF_KRETPROBE(kretprobe_copy_siginfo_to_user, int ret) {
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __s32 *sigp = bpf_map_lookup_elem(&copy_siginfo_to_user__signals, &tid);
+    __s32 sig = sigp ? *sigp : 0;
+    bpf_map_delete_elem(&copy_siginfo_to_user__signals, &tid);
+
     // TODO: temporarily emit all events for debugging
     // if (ret == 0) {
     //     return 0;
     // }
-    emit_event(ctx, EVENT_COPY_SIGINFO_TO_USER_FAILED, ret);
+    emit_event(ctx, EVENT_COPY_SIGINFO_TO_USER_FAILED, sig, ret);
     return 0;
 }
 
@@ -456,7 +483,7 @@ int BPF_KRETPROBE(kretprobe_setup_signal_shadow_stack, int ret) {
     if (ret == 0) {
         return 0;
     }
-    emit_event(ctx, EVENT_SETUP_SIGNAL_SHADOW_STACK_FAILED, ret);
+    emit_event(ctx, EVENT_SETUP_SIGNAL_SHADOW_STACK_FAILED, 0, ret);
     return 0;
 }
 
@@ -467,7 +494,7 @@ int BPF_KRETPROBE(kretprobe_get_sigframe, void *ret) {
     // if (ret != (void *)-1L) {
     //     return 0;
     // }
-    emit_event(ctx, EVENT_GET_SIGFRAME_FAILED, (__s64)ret);
+    emit_event(ctx, EVENT_GET_SIGFRAME_FAILED, 0, (__s64)ret);
     return 0;
 }
 

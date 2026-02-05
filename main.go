@@ -49,8 +49,11 @@ var (
 
 const maxStackDepth = 50
 
-// SA_RESTORER - x86_64 signal flag indicating sa_restorer is set
-const SA_RESTORER = 0x04000000
+// Signal action flags (x86_64)
+const (
+	SA_ONSTACK  = 0x08000000
+	SA_RESTORER = 0x04000000
+)
 
 // Event types matching the eBPF code
 const (
@@ -77,19 +80,20 @@ var mapsPattern *regexp.Regexp
 var eventInfo = map[uint8]struct {
 	name    string
 	showSig bool
+	showRet bool
 }{
-	EventGetSignalEntry:    {"get_signal", false},
-	EventVfsCoredump:       {"vfs_coredump", false},
-	EventDoGroupExit:       {"do_group_exit", false},
-	EventForceSigsegv:      {"force_sigsegv", false},
-	EventSignalSetupFailed: {"signal_setup_done failed", true},
-	EventForceFatalSig:     {"force_fatal_sig", true},
-	EventForceSig:          {"force_sig", true},
-	EventRtSigreturn:                  {"rt_sigreturn", false},
-	EventX64RtFrameFailed:             {"x64_setup_rt_frame failed", true},
-	EventCopySiginfoToUserFailed:      {"copy_siginfo_to_user", true},
-	EventSetupSignalShadowStackFailed: {"setup_signal_shadow_stack failed", true},
-	EventGetSigframeFailed:            {"get_sigframe", true},
+	EventGetSignalEntry:               {"get_signal", false, false},
+	EventVfsCoredump:                  {"vfs_coredump", false, false},
+	EventDoGroupExit:                  {"do_group_exit", false, false},
+	EventForceSigsegv:                 {"force_sigsegv", false, false},
+	EventSignalSetupFailed:            {"signal_setup_done failed", true, true},
+	EventForceFatalSig:                {"force_fatal_sig", true, false},
+	EventForceSig:                     {"force_sig", true, false},
+	EventRtSigreturn:                  {"rt_sigreturn", false, false},
+	EventX64RtFrameFailed:             {"x64_setup_rt_frame failed", true, true},
+	EventCopySiginfoToUserFailed:      {"copy_siginfo_to_user", true, true},
+	EventSetupSignalShadowStackFailed: {"setup_signal_shadow_stack failed", false, true},
+	EventGetSigframeFailed:            {"get_sigframe", false, true},
 }
 
 func parseStackProbes(s string) ([]int64, error) {
@@ -219,6 +223,7 @@ func main() {
 	attachKprobe(flagRtSigreturn, "__x64_sys_rt_sigreturn", objs.KprobeRtSigreturn)
 	attachKprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KprobeX64SetupRtFrame)
 	attachKretprobe(flagX64SetupRtFrame, "x64_setup_rt_frame", objs.KretprobeX64SetupRtFrame)
+	attachKprobe(flagCopySiginfoToUser, "copy_siginfo_to_user", objs.KprobeCopySiginfoToUser)
 	attachKretprobe(flagCopySiginfoToUser, "copy_siginfo_to_user", objs.KretprobeCopySiginfoToUser)
 	attachKretprobe(flagSetupSignalShadowStack, "setup_signal_shadow_stack", objs.KretprobeSetupSignalShadowStack)
 	attachKretprobe(flagGetSigframe, "get_sigframe", objs.KretprobeGetSigframe)
@@ -270,23 +275,20 @@ func main() {
 
 	// Buffered channel for passing raw event bytes from reader to handler
 	// Large buffer to avoid dropping events during bursts
-	eventChan := make(chan []byte, 100000)
+	eventChan := make(chan []byte, 1000000)
 
-	// Multiple event handler goroutines for parallel parsing
-	const numHandlers = 4
-	for i := 0; i < numHandlers; i++ {
-		go func() {
-			for rawEvent := range eventChan {
-				// Use unsafe pointer cast instead of slow binary.Read
-				if len(rawEvent) < int(unsafe.Sizeof(signalsnoopEvent{})) {
-					log.Printf("Event too small: %d bytes", len(rawEvent))
-					continue
-				}
-				event := *(*signalsnoopEvent)(unsafe.Pointer(&rawEvent[0]))
-				printEvent(&event)
+	// Single event handler goroutine to avoid interleaved output
+	go func() {
+		for rawEvent := range eventChan {
+			// Use unsafe pointer cast instead of slow binary.Read
+			if len(rawEvent) < int(unsafe.Sizeof(signalsnoopEvent{})) {
+				log.Printf("Event too small: %d bytes", len(rawEvent))
+				continue
 			}
-		}()
-	}
+			event := *(*signalsnoopEvent)(unsafe.Pointer(&rawEvent[0]))
+			printEvent(&event)
+		}
+	}()
 
 	// Event reader goroutine - minimal work, just copy bytes
 	go func() {
@@ -309,7 +311,7 @@ func main() {
 			select {
 			case eventChan <- rawCopy:
 			default:
-				log.Printf("Event channel full, dropping event")
+				panic("Event channel full, dropping event")
 			}
 		}
 	}()
@@ -361,7 +363,7 @@ func printEvent(e *signalsnoopEvent) {
 				return
 			}
 		}
-		fmt.Printf("get_sigframe for tgid=%d tid=%d (%s), ret=0x%x\n", e.Pid, e.Tid, comm, e.Retval)
+		fmt.Printf("get_sigframe for tgid=%d tid=%d (%s), ret=0x%x\n", e.Pid, e.Tid, comm, uint64(e.Retval))
 		printStack(e)
 		printRegs(e)
 		fmt.Println()
@@ -380,7 +382,7 @@ func printEvent(e *signalsnoopEvent) {
 				return
 			}
 		}
-		fmt.Printf("copy_siginfo_to_user for tgid=%d tid=%d (%s), ret=%d\n", e.Pid, e.Tid, comm, e.Retval)
+		fmt.Printf("copy_siginfo_to_user for tgid=%d tid=%d (%s), sig=%d, ret=%d\n", e.Pid, e.Tid, comm, e.Sig, e.Retval)
 		printStack(e)
 		printRegs(e)
 		fmt.Println()
@@ -393,16 +395,23 @@ func printEvent(e *signalsnoopEvent) {
 		return
 	}
 
-	if info.showSig {
-		fmt.Printf("%s for tgid=%d tid=%d (%s), sig=%d\n", info.name, e.Pid, e.Tid, comm, e.Retval)
-	} else {
+	// Build output line with optional sig and ret values
+	switch {
+	case info.showSig && info.showRet:
+		fmt.Printf("%s for tgid=%d tid=%d (%s), sig=%d, ret=%d\n", info.name, e.Pid, e.Tid, comm, e.Sig, e.Retval)
+	case info.showSig:
+		fmt.Printf("%s for tgid=%d tid=%d (%s), sig=%d\n", info.name, e.Pid, e.Tid, comm, e.Sig)
+	case info.showRet:
+		fmt.Printf("%s for tgid=%d tid=%d (%s), ret=%d\n", info.name, e.Pid, e.Tid, comm, e.Retval)
+	default:
 		fmt.Printf("%s for tgid=%d tid=%d (%s)\n", info.name, e.Pid, e.Tid, comm)
 	}
 
 	// Print sa_flags for x64_setup_rt_frame failures
 	if e.EventType == EventX64RtFrameFailed {
 		hasRestorer := e.SaFlags&SA_RESTORER != 0
-		fmt.Printf("    sa_flags: 0x%x (SA_RESTORER=%v)\n", e.SaFlags, hasRestorer)
+		hasOnstack := e.SaFlags&SA_ONSTACK != 0
+		fmt.Printf("    sa_flags: 0x%x (SA_RESTORER=%v, SA_ONSTACK=%v)\n", e.SaFlags, hasRestorer, hasOnstack)
 	}
 	printStack(e)
 	printRegs(e)

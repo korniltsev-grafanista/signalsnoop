@@ -18,7 +18,8 @@ type signalsnoopEvent struct {
 	Timestamp     uint64
 	Comm          [16]int8
 	EventType     uint8
-	_             [7]byte
+	_             [3]byte
+	Sig           int32
 	Retval        int64
 	SaFlags       uint64
 	StackDepth    int32
@@ -176,6 +177,7 @@ type signalsnoopSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type signalsnoopProgramSpecs struct {
+	KprobeCopySiginfoToUser         *ebpf.ProgramSpec `ebpf:"kprobe_copy_siginfo_to_user"`
 	KprobeDoCoredump                *ebpf.ProgramSpec `ebpf:"kprobe_do_coredump"`
 	KprobeDoGroupExit               *ebpf.ProgramSpec `ebpf:"kprobe_do_group_exit"`
 	KprobeForceFatalSig             *ebpf.ProgramSpec `ebpf:"kprobe_force_fatal_sig"`
@@ -198,8 +200,9 @@ type signalsnoopProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type signalsnoopMapSpecs struct {
-	Events                 *ebpf.MapSpec `ebpf:"events"`
-	X64SetupRtFrameSignals *ebpf.MapSpec `ebpf:"x64_setup_rt_frame__signals"`
+	CopySiginfoToUserSignals *ebpf.MapSpec `ebpf:"copy_siginfo_to_user__signals"`
+	Events                   *ebpf.MapSpec `ebpf:"events"`
+	X64SetupRtFrameSignals   *ebpf.MapSpec `ebpf:"x64_setup_rt_frame__signals"`
 }
 
 // signalsnoopObjects contains all objects after they have been loaded into the kernel.
@@ -221,12 +224,14 @@ func (o *signalsnoopObjects) Close() error {
 //
 // It can be passed to loadSignalsnoopObjects or ebpf.CollectionSpec.LoadAndAssign.
 type signalsnoopMaps struct {
-	Events                 *ebpf.Map `ebpf:"events"`
-	X64SetupRtFrameSignals *ebpf.Map `ebpf:"x64_setup_rt_frame__signals"`
+	CopySiginfoToUserSignals *ebpf.Map `ebpf:"copy_siginfo_to_user__signals"`
+	Events                   *ebpf.Map `ebpf:"events"`
+	X64SetupRtFrameSignals   *ebpf.Map `ebpf:"x64_setup_rt_frame__signals"`
 }
 
 func (m *signalsnoopMaps) Close() error {
 	return _SignalsnoopClose(
+		m.CopySiginfoToUserSignals,
 		m.Events,
 		m.X64SetupRtFrameSignals,
 	)
@@ -236,6 +241,7 @@ func (m *signalsnoopMaps) Close() error {
 //
 // It can be passed to loadSignalsnoopObjects or ebpf.CollectionSpec.LoadAndAssign.
 type signalsnoopPrograms struct {
+	KprobeCopySiginfoToUser         *ebpf.Program `ebpf:"kprobe_copy_siginfo_to_user"`
 	KprobeDoCoredump                *ebpf.Program `ebpf:"kprobe_do_coredump"`
 	KprobeDoGroupExit               *ebpf.Program `ebpf:"kprobe_do_group_exit"`
 	KprobeForceFatalSig             *ebpf.Program `ebpf:"kprobe_force_fatal_sig"`
@@ -256,6 +262,7 @@ type signalsnoopPrograms struct {
 
 func (p *signalsnoopPrograms) Close() error {
 	return _SignalsnoopClose(
+		p.KprobeCopySiginfoToUser,
 		p.KprobeDoCoredump,
 		p.KprobeDoGroupExit,
 		p.KprobeForceFatalSig,
